@@ -130,7 +130,7 @@ static/
 
 - CLI session discovery scans the standard locations (e.g. `~/.claude/projects` for Claude Code).
 - This is a non-commercial personal project. UI deliberately pays homage to each CLI's official app.
-- License: [MIT](LICENSE).
+- License: [AGPL-3.0](LICENSE) — free to use, modify and even commercialize, but any derivative work (including one offered as a network service) must be open-sourced under the same license.
 
 ## Recent updates
 
