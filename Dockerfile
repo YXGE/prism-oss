@@ -1,20 +1,24 @@
 FROM node:22-bookworm-slim
 
+ARG CODEX_VERSION=0.146.0
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/data/home \
     PRISM_DATA_DIR=/data/prism \
-    PRISM_INBOX_DIR=/data/prism/inbox
+    PRISM_INBOX_DIR=/data/prism/inbox \
+    PRISM_VERSION=0.2.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl git openssh-client procps python3 python3-venv tmux \
+        bash bubblewrap ca-certificates curl git openssh-client procps python3 python3-venv tmux \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv
 
-RUN npm install --global @openai/codex@latest
+RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
+    && codex --version
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt

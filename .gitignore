@@ -21,6 +21,8 @@ auth.json
 chat_data/
 uploads/
 data/
+.dev-data/
+.tools/
 
 # Python
 __pycache__/

@@ -1,5 +1,5 @@
 /* Prism PWA app-shell cache. Authenticated /api data is deliberately excluded. */
-const CACHE_VERSION = 'prism-shell-20260802-v1';
+const CACHE_VERSION = 'prism-shell-20260802-v2';
 const scopeUrl = new URL(self.registration.scope);
 const scopePath = scopeUrl.pathname.replace(/\/$/, '');
 const atScope = (path) => new URL(scopePath + path, self.location.origin).toString();

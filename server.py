@@ -22,7 +22,9 @@ from pydantic import BaseModel
 # Load .env if present (no dep)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_env_path):
-    with open(_env_path) as _f:
+    # utf-8-sig accepts both ordinary UTF-8 and the BOM written by Windows
+    # PowerShell 5's `Set-Content -Encoding utf8`.
+    with open(_env_path, encoding="utf-8-sig") as _f:
         for _line in _f:
             _line = _line.strip()
             if not _line or _line.startswith("#") or "=" not in _line:
@@ -74,6 +76,21 @@ LOGIN_LOCKOUT_SECONDS = 300  # 5 minutes
 
 app = FastAPI(title="Prism Dashboard", docs_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+_PRISM_VERSION = os.environ.get("PRISM_VERSION", "dev")
+_PRISM_COMMIT = next(
+    (
+        os.environ.get(name)
+        for name in (
+            "PRISM_COMMIT",
+            "ZEABUR_GIT_COMMIT_SHA",
+            "RAILWAY_GIT_COMMIT_SHA",
+            "GIT_COMMIT",
+        )
+        if os.environ.get(name)
+    ),
+    "unknown",
+)
+_PRISM_BUILD_TIME = os.environ.get("PRISM_BUILD_TIME", "unknown")
 _cors_origins = [
     origin.strip()
     for origin in os.environ.get("PRISM_CORS_ORIGINS", "").split(",")
@@ -116,8 +133,13 @@ async def frontend_security_and_cache_headers(request: Request, call_next):
 
 @app.get("/api/health")
 def api_health():
-    """Unauthenticated liveness check for Zeabur; exposes no host details."""
-    return {"ok": True}
+    """Unauthenticated liveness and build identity; exposes no host details."""
+    return {
+        "ok": True,
+        "version": _PRISM_VERSION,
+        "commit": _PRISM_COMMIT[:12],
+        "build_time": _PRISM_BUILD_TIME,
+    }
 
 # --- Auth ---
 class AuthRequest(BaseModel):

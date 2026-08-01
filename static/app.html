@@ -5384,6 +5384,20 @@ html[data-appearance="dark"] body.sketch .btn-secondary {
               <svg class="st-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="9 6 15 12 9 18"/></svg>
             </button>
           </div>
+
+          <div class="st-group-title">System</div>
+          <div class="st-card">
+            <div class="st-row" aria-label="当前部署版本">
+              <span class="st-row-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
+              </span>
+              <span class="st-row-copy">
+                <span class="st-row-title">Build</span>
+                <span class="st-row-note">用于确认手机上运行的是哪次部署</span>
+              </span>
+              <span class="st-row-value" id="stBuildValue">读取中…</span>
+            </div>
+          </div>
         </div>
       </div>
       <div class="st-appearance">
@@ -6239,6 +6253,22 @@ function backToSettingsList() {
   if (view) view.setAttribute('data-sub', 'list');
 }
 
+async function loadBuildInfo() {
+  const target = document.getElementById('stBuildValue');
+  if (!target) return;
+  try {
+    const response = await fetch(API + '/health', { cache: 'no-store' });
+    if (!response.ok) throw new Error('health ' + response.status);
+    const info = await response.json();
+    const version = info.version && info.version !== 'dev' ? info.version : '';
+    const commit = info.commit && info.commit !== 'unknown' ? info.commit : '';
+    target.textContent = [version, commit].filter(Boolean).join(' · ') || 'development';
+    target.title = info.build_time && info.build_time !== 'unknown' ? info.build_time : '';
+  } catch (error) {
+    target.textContent = 'unavailable';
+  }
+}
+
 applyThinkingAppearance(readThinkingAppearance(), false);
 
 function switchView(name, options = {}) {
@@ -6279,6 +6309,7 @@ function switchView(name, options = {}) {
     if (view) view.setAttribute('data-sub', 'list');
     applyThinkingAppearance(readThinkingAppearance(), false);
     loadUsagePanel();
+    loadBuildInfo();
   }
   // collapse sidebar automatically on mobile after pick
   if (window.innerWidth <= 720) toggleSidebar(false);

@@ -49,6 +49,24 @@ python3 server.py            # serves on http://0.0.0.0:8001 (set PORT to change
 
 Open the server URL, log in with your `DASHBOARD_PASSWORD`, and you'll land on the **Code** view.
 
+### One-command development on Windows
+
+```powershell
+.\scripts\dev.cmd
+```
+
+The script creates `.venv` and a private `.env` when needed, installs the exact
+direct dependency versions, and starts Prism. Before committing or deploying,
+run the complete local check:
+
+```powershell
+.\scripts\check.cmd
+```
+
+GitHub Actions runs the same runtime and PWA smoke checks on every push and pull
+request. The Settings page shows the deployed version/commit when the hosting
+environment supplies `PRISM_VERSION` or a supported commit environment variable.
+
 ### Environment
 
 | Variable             | Required | Default                     | Notes                                          |

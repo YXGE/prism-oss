@@ -36,6 +36,18 @@ PRISM_DATA_DIR=/data/prism
 PRISM_INBOX_DIR=/data/prism/inbox
 ```
 
+Optional deployment identity (shown under Settings -> System):
+
+```text
+PRISM_VERSION=<your release label>
+PRISM_COMMIT=<git commit sha, only if Zeabur does not inject one>
+PRISM_BUILD_TIME=<ISO-8601 timestamp>
+```
+
+The container pins the Codex CLI to the version declared by `CODEX_VERSION` in
+the Dockerfile. Upgrade it intentionally and run the repository checks before
+deploying instead of pulling an unreviewed `latest` release during every build.
+
 Zeabur supplies `PORT`; do not hard-code it. Never place Codex credentials or
 the dashboard password in Git.
 
