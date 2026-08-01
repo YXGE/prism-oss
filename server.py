@@ -5,7 +5,7 @@ Features: chat (send + live SSE + message list), code (CLI terminal session
 list/detail, live xterm via SSE), and usage (Claude + Codex usage panels).
 """
 
-import asyncio, html, json, sqlite3, os, hashlib, time, secrets, re, logging, subprocess, sys, uuid, threading
+import asyncio, html, json, sqlite3, os, hashlib, hmac, time, secrets, re, logging, subprocess, sys, uuid, threading
 import base64 as _b64
 import urllib.request as _urllib_request
 from typing import Optional, List
@@ -32,9 +32,12 @@ if os.path.exists(_env_path):
 _PW = os.environ.get("DASHBOARD_PASSWORD")
 if not _PW:
     raise RuntimeError("DASHBOARD_PASSWORD env var not set. Create ~/dashboard/.env with DASHBOARD_PASSWORD=...")
+if len(_PW) < 20 and os.environ.get("PRISM_ALLOW_WEAK_PASSWORD") != "1":
+    raise RuntimeError("DASHBOARD_PASSWORD must contain at least 20 characters for remote terminal access")
 PASSWORD_HASH = hashlib.sha256(_PW.encode()).hexdigest()
 del _PW
-_TOKEN_STORE = os.path.expanduser("~/.cache/prism-oss/tokens.json")
+_PRISM_DATA_DIR = os.path.expanduser(os.environ.get("PRISM_DATA_DIR", "~/.local/share/prism"))
+_TOKEN_STORE = os.path.join(_PRISM_DATA_DIR, "tokens.json")
 _HOME = os.path.expanduser("~")
 
 def _load_tokens():
@@ -69,12 +72,27 @@ MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 300  # 5 minutes
 
 app = FastAPI(title="Prism Dashboard", docs_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("PRISM_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 @app.middleware("http")
 async def no_cache_frontend_assets(request: Request, call_next):
     response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     path = request.url.path
     if (
         path in {"/app", "/dashboard/app"}
@@ -86,6 +104,12 @@ async def no_cache_frontend_assets(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
+
+
+@app.get("/api/health")
+def api_health():
+    """Unauthenticated liveness check for Zeabur; exposes no host details."""
+    return {"ok": True}
 
 # --- Auth ---
 class AuthRequest(BaseModel):
@@ -103,7 +127,7 @@ def authenticate(req: AuthRequest, x_real_ip: Optional[str] = Header(None), x_fo
             raise HTTPException(429, f"尝试太多次了，请{remaining}秒后再试")
         if time.time() - last_time >= LOGIN_LOCKOUT_SECONDS:
             login_attempts.pop(ip, None)
-    if hashlib.sha256(req.password.encode()).hexdigest() == PASSWORD_HASH:
+    if hmac.compare_digest(hashlib.sha256(req.password.encode()).hexdigest(), PASSWORD_HASH):
         login_attempts.pop(ip, None)
         token = secrets.token_hex(32)
         valid_tokens.add(token)

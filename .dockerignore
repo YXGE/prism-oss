@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+chat_data/
+data/

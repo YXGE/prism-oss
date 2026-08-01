@@ -15,7 +15,10 @@ from typing import Optional, Tuple
 
 # os imported above
 
-LOG_DIR = Path("/var/tmp/cc_terminal_logs")
+# Keep terminal state alongside the rest of Prism's persistent data.  The
+# explicit override is useful for operators who prefer ephemeral logs.
+_PRISM_DATA_DIR = Path(os.environ.get("PRISM_DATA_DIR", Path.home() / ".cache" / "prism-oss"))
+LOG_DIR = Path(os.environ.get("PRISM_LOG_DIR", _PRISM_DATA_DIR / "terminal_logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LIVE_STATE_PATH = LOG_DIR / "live_sessions.json"
 CODEX_SESSION_MAP_PATH = LOG_DIR / "codex_session_map.json"
