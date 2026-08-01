@@ -74,10 +74,43 @@ let chViewingUnified = null;    // unified store session_id when viewing from me
 // restore the pin when returning to the chats tab — iOS Safari can reset
 // scrollTop on display:none/flex toggles.
 let _chWasAtBottom = true;
+const _CH_SCROLL_STORAGE_PREFIX = 'prism:chat-scroll:v1:';
+let _chPendingScrollRestore = null;
+let _chScrollPersistTimer = null;
 // Timestamp of the user's most recent scroll-away. Lets _chPinChatBottomSoon
 // decide whether an SSE-triggered re-render should still try to pin to bottom
 // or back off because the user has scrolled to read history.
 let _chUserScrolledAwayAt = 0;
+
+function _chReadScrollState(name) {
+  if (!name) return null;
+  try {
+    const value = JSON.parse(localStorage.getItem(_CH_SCROLL_STORAGE_PREFIX + name) || 'null');
+    return value && typeof value === 'object' ? value : null;
+  } catch (_) { return null; }
+}
+
+function chPersistScrollState(name = activeChat) {
+  if (!name || chViewingArchive || chViewingUnified) return;
+  const wrap = document.getElementById('chMsgs');
+  if (!wrap || activeChat !== name) return;
+  try {
+    const fromBottom = Math.max(0, wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight);
+    localStorage.setItem(_CH_SCROLL_STORAGE_PREFIX + name, JSON.stringify({
+      fromBottom,
+      atBottom: fromBottom < 80,
+      savedAt: Date.now(),
+    }));
+  } catch (_) {}
+}
+
+function _chScheduleScrollPersist() {
+  if (_chScrollPersistTimer) clearTimeout(_chScrollPersistTimer);
+  _chScrollPersistTimer = setTimeout(() => {
+    _chScrollPersistTimer = null;
+    chPersistScrollState();
+  }, 180);
+}
 
 // === Search: global on Chats list and scoped inside one conversation ===
 let _chSearchTimer = null;
@@ -1969,7 +2002,10 @@ function openChatActionSheet(s, anchorEl) {
 }
 
 function enterChatDetail(name, options = {}) {
-  if (activeChat && activeChat !== name && !chViewingArchive && !chViewingUnified) chPersistActiveDraft();
+  if (activeChat && activeChat !== name && !chViewingArchive && !chViewingUnified) {
+    chPersistActiveDraft();
+    chPersistScrollState(activeChat);
+  }
   const preserveFocus = Boolean(options.preserveFocus);
   if (!preserveFocus) {
     _chLiveFocusSourceUuid = null;
@@ -1990,6 +2026,7 @@ function enterChatDetail(name, options = {}) {
   document.getElementById('chatsView').setAttribute('data-sub', 'detail');
   _chDetachHiddenCodeTerminalFor(name);
   activeChat = name;
+  _chPendingScrollRestore = options.restoreScroll ? { name, state: _chReadScrollState(name) } : null;
   activeSession = name;     // route Code's upload / send pipeline at this session
   _chResetRevealState(name);
   lastChatFingerprint = null;
@@ -2037,11 +2074,13 @@ function enterChatDetail(name, options = {}) {
   _chScheduleChatRefresh();
   _chStartRealtimeEvents(name);
   _chStartUsagePolling(name);
+  if (typeof persistNavigationState === 'function') persistNavigationState();
 }
 function exitChatDetail() {
   _chStopRealtimeEvents();
   _chStopUsagePolling();
   chPersistActiveDraft();
+  chPersistScrollState();
   chCloseDetailSearch();
   chSub = 'list';
   document.getElementById('chatsView').setAttribute('data-sub', 'list');
@@ -2058,6 +2097,7 @@ function exitChatDetail() {
   _chResetRevealState();
   lastChatFingerprint = null;
   if (chatRefreshTimer) { clearTimeout(chatRefreshTimer); chatRefreshTimer = null; }
+  if (typeof persistNavigationState === 'function') persistNavigationState();
 }
 
 function enterUnifiedDetail(sessionId, displayName) {
@@ -2175,6 +2215,7 @@ function updateChScrollBottomBtn() {
   _chWasAtBottom = atBottom;
   if (!atBottom) _chUserScrolledAwayAt = Date.now();
   btn.style.display = atBottom ? 'none' : 'flex';
+  _chScheduleScrollPersist();
 }
 
 function _chPinChatBottomSoon(wrap = document.getElementById('chMsgs')) {
@@ -3598,8 +3639,16 @@ async function renderChatMessages(name, cachedData = null) {
     //      that got inserted above
     //   3. polling re-render with content appended at the bottom → keep
     //      scrollTop unchanged so the message they're reading doesn't jump
+    const persistedScroll = _chPendingScrollRestore && _chPendingScrollRestore.name === name
+      ? _chPendingScrollRestore.state
+      : null;
+    if (_chPendingScrollRestore && _chPendingScrollRestore.name === name) _chPendingScrollRestore = null;
     if (focusedSearchTarget) {
       // Search navigation owns the scroll position for this render.
+    } else if (persistedScroll) {
+      wrap.scrollTop = persistedScroll.atBottom
+        ? wrap.scrollHeight
+        : Math.max(0, wrap.scrollHeight - wrap.clientHeight - (Number(persistedScroll.fromBottom) || 0));
     } else if (hasLiveSearchAnchor) {
       const currentAnchor = anchorSelector ? wrap.querySelector(anchorSelector) : null;
       wrap.scrollTop = currentAnchor && oldAnchorOffset !== null ? currentAnchor.offsetTop - oldAnchorOffset : oldScrollTop;
@@ -4004,10 +4053,10 @@ async function chSendMessage() {
   _chScheduleReceiptPolls(targetChat);
 }
 
-window.addEventListener('pagehide', chPersistActiveDraft);
-window.addEventListener('beforeunload', chPersistActiveDraft);
+window.addEventListener('pagehide', () => { chPersistActiveDraft(); chPersistScrollState(); });
+window.addEventListener('beforeunload', () => { chPersistActiveDraft(); chPersistScrollState(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') chPersistActiveDraft();
+  if (document.visibilityState === 'hidden') { chPersistActiveDraft(); chPersistScrollState(); }
 });
 
 // Switch buttons between Code <-> Chats detail views

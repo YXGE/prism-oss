@@ -16,6 +16,7 @@ from fastapi import FastAPI, Query, HTTPException, Header, Depends, Request, Upl
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse as _StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 # Load .env if present (no dep)
@@ -72,6 +73,7 @@ MAX_LOGIN_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 300  # 5 minutes
 
 app = FastAPI(title="Prism Dashboard", docs_url=None)
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 _cors_origins = [
     origin.strip()
     for origin in os.environ.get("PRISM_CORS_ORIGINS", "").split(",")
@@ -87,22 +89,28 @@ if _cors_origins:
 
 
 @app.middleware("http")
-async def no_cache_frontend_assets(request: Request, call_next):
+async def frontend_security_and_cache_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     path = request.url.path
-    if (
-        path in {"/app", "/dashboard/app"}
-        or (
-            (path.startswith("/static/") or path.startswith("/dashboard/static/"))
-            and path.rsplit(".", 1)[-1] in {"js", "css"}
-        )
-    ):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    if path.startswith("/api/") or path.startswith("/dashboard/api/"):
+        # Authenticated terminal/chat payloads must never enter browser or PWA caches.
+        response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
+    elif path.endswith("/sw.js") or path.endswith("/manifest.webmanifest"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    elif (
+        path in {"/", "/app", "/dashboard/", "/dashboard/app"}
+        or path.startswith("/static/")
+        or path.startswith("/dashboard/static/")
+    ):
+        # Revalidation keeps ordinary browser loads current while the service
+        # worker can retain the non-sensitive app shell for instant PWA starts.
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 
@@ -154,11 +162,33 @@ os.makedirs(CHAT_DATA_DIR, exist_ok=True)
 
 @app.get("/")
 async def serve_root():
-    return FileResponse(os.path.join(static_path, "app.html"), headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+    return FileResponse(os.path.join(static_path, "app.html"), headers={"Cache-Control": "no-cache, must-revalidate"})
 
 @app.get("/app")
 async def serve_app():
-    return FileResponse(os.path.join(static_path, "app.html"), headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+    return FileResponse(os.path.join(static_path, "app.html"), headers={"Cache-Control": "no-cache, must-revalidate"})
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+@app.get("/dashboard/manifest.webmanifest", include_in_schema=False)
+async def serve_manifest():
+    return FileResponse(
+        os.path.join(static_path, "manifest.webmanifest"),
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+@app.get("/sw.js", include_in_schema=False)
+@app.get("/dashboard/sw.js", include_in_schema=False)
+async def serve_service_worker(request: Request):
+    scope = "/dashboard/" if request.url.path.startswith("/dashboard/") else "/"
+    return FileResponse(
+        os.path.join(static_path, "sw.js"),
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache, must-revalidate",
+            "Service-Worker-Allowed": scope,
+        },
+    )
 
 # --- Helper modules ---
 import sys as _sys

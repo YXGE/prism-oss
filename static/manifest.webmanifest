@@ -1,0 +1,32 @@
+{
+  "id": ".",
+  "name": "Sevis · Prism",
+  "short_name": "Sevis",
+  "description": "Private mobile workspace for Codex, Claude and terminal sessions.",
+  "start_url": "./app",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ef",
+  "theme_color": "#f5f3ef",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./static/icons/prism-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./static/icons/prism-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./static/icons/prism-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

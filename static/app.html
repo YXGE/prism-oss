@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Prism">
+<meta name="apple-mobile-web-app-title" content="Sevis">
 <meta name="theme-color" content="#f5f3ef" id="metaThemeColor">
 <title>Prism</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="static/icons/prism-192.png">
+<link rel="apple-touch-icon" href="static/icons/prism-192.png">
 <link rel="stylesheet" href="static/vendor/xterm/xterm.css">
 <link rel="stylesheet" href="static/vendor/cropper.min.css">
 <style>
@@ -85,6 +87,30 @@ body.codex-chrome:not(.sidebar-open)::before {
   cursor: pointer;
 }
 .login-err { color: #cc4444; font-size: 0.82rem; margin-top: 8px; min-height: 1em; }
+
+.connection-status {
+  position: fixed;
+  z-index: 10050;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  left: 50%;
+  transform: translate(-50%, -10px);
+  max-width: min(88vw, 420px);
+  padding: 8px 14px;
+  border: 1px solid rgba(42,39,36,0.12);
+  border-radius: 999px;
+  background: rgba(42,39,36,0.92);
+  color: #fffaf2;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+  font-size: 0.78rem;
+  line-height: 1.3;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .18s ease, transform .18s ease, visibility .18s ease;
+}
+.connection-status.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.connection-status[data-state="online"] { background: rgba(75,122,89,0.94); }
 
 /* Shell layout */
 .shell {
@@ -5141,6 +5167,8 @@ html[data-appearance="dark"] body.sketch .btn-secondary {
 </head>
 <body class="sketch">
 
+<div class="connection-status" id="connectionStatus" role="status" aria-live="polite"></div>
+
 <!-- Sketch hand-drawn SVG filter -->
 <svg style="position:absolute;width:0;height:0" aria-hidden="true">
   <filter id="sketch-rough">
@@ -5805,6 +5833,79 @@ let cardRefreshTimer = null;
 // "/" or "/app" from the current pathname; resolves to "" at the root.
 const PREFIX = location.pathname.replace(/\/(?:app)?$/, '');
 const API = PREFIX + '/api';
+const NAV_STATE_KEY = 'prism:navigation:v1';
+const SESSIONS_CACHE_KEY = 'prism:sessions:v1';
+let _connectionState = navigator.onLine ? 'online' : 'offline';
+let _connectionHideTimer = null;
+let _bootstrapRunning = false;
+
+function setConnectionStatus(state, message = '') {
+  _connectionState = state;
+  const el = document.getElementById('connectionStatus');
+  if (!el) return;
+  if (_connectionHideTimer) { clearTimeout(_connectionHideTimer); _connectionHideTimer = null; }
+  el.dataset.state = state;
+  if (state === 'offline') {
+    el.textContent = message || '服务器暂时离线 · 已保留本地界面，联网后会自动重连';
+    el.classList.add('show');
+  } else if (state === 'connecting') {
+    el.textContent = message || '正在重新连接服务器…';
+    el.classList.add('show');
+  } else {
+    if (el.classList.contains('show')) {
+      el.textContent = message || '已重新连接';
+      el.classList.add('show');
+      _connectionHideTimer = setTimeout(() => el.classList.remove('show'), 1600);
+    } else {
+      el.classList.remove('show');
+    }
+  }
+}
+
+function readNavigationState() {
+  try {
+    const value = JSON.parse(localStorage.getItem(NAV_STATE_KEY) || 'null');
+    return value && typeof value === 'object' ? value : null;
+  } catch (_) { return null; }
+}
+
+function persistNavigationState() {
+  try {
+    const isChat = currentView === 'chats';
+    const detail = isChat
+      ? (typeof chSub !== 'undefined' && chSub === 'detail')
+      : (currentView === 'code' && codeSub === 'detail');
+    const session = detail
+      ? (isChat ? (typeof activeChat !== 'undefined' ? activeChat : null) : activeSession)
+      : null;
+    localStorage.setItem(NAV_STATE_KEY, JSON.stringify({
+      view: currentView,
+      detail,
+      session,
+      savedAt: Date.now(),
+    }));
+  } catch (_) {}
+}
+
+function readCachedSessions() {
+  try {
+    const value = JSON.parse(localStorage.getItem(SESSIONS_CACHE_KEY) || 'null');
+    return value && Array.isArray(value.sessions) ? value.sessions : [];
+  } catch (_) { return []; }
+}
+
+function applySessionList(nextSessions, persist = true) {
+  sessions = Array.isArray(nextSessions) ? nextSessions : [];
+  if (persist) {
+    try {
+      localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({ sessions, savedAt: Date.now() }));
+    } catch (_) {}
+  }
+  renderChips();
+  renderCards();
+  renderDetailTabs();
+  renderChatRows();
+}
 
 function showLogin() {
   document.getElementById('loginOverlay').style.display = 'flex';
@@ -5815,15 +5916,32 @@ function hideLogin() {
 
 async function checkAuth() {
   if (!TOKEN) { showLogin(); return false; }
-  // ping sessions endpoint to verify token
-  const r = await fetch(API + '/sessions', { headers: { Authorization: 'Bearer ' + TOKEN } });
-  if (r.status === 401) {
-    localStorage.removeItem('prism_token');
-    TOKEN = '';
-    showLogin();
-    return false;
+  try {
+    const r = await fetch(API + '/sessions', {
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      cache: 'no-store',
+    });
+    if (r.status === 401) {
+      localStorage.removeItem('prism_token');
+      TOKEN = '';
+      showLogin();
+      return false;
+    }
+    if (!r.ok) throw new Error('sessions ' + r.status);
+    const data = await r.json();
+    applySessionList(data.sessions || []);
+    hideLogin();
+    setConnectionStatus('online');
+    return true;
+  } catch (e) {
+    // A saved token plus the locally cached session index lets the PWA reopen
+    // its last screen while Zeabur/VPN reconnects. No API response is cached.
+    const cached = readCachedSessions();
+    if (cached.length) applySessionList(cached, false);
+    hideLogin();
+    setConnectionStatus('offline');
+    return true;
   }
-  return true;
 }
 
 async function doLogin() {
@@ -6154,7 +6272,7 @@ function switchView(name, options = {}) {
     }
     setTimeout(() => { if (typeof safeFit === 'function') safeFit(); else if (fitAddon) try { fitAddon.fit(); } catch(e) {} }, 50);
   } else if (name === 'chats') {
-    loadSessions();
+    if (!options.deferSessionRefresh) loadSessions();
     if (typeof restoreChatScrollIfNeeded === 'function') restoreChatScrollIfNeeded();
   } else if (name === 'settings') {
     const view = document.getElementById('settingsView');
@@ -6164,20 +6282,31 @@ function switchView(name, options = {}) {
   }
   // collapse sidebar automatically on mobile after pick
   if (window.innerWidth <= 720) toggleSidebar(false);
+  if (!options.skipPersist) persistNavigationState();
 }
 
 async function loadSessions() {
   try {
-    const r = await fetch(API + '/sessions', { headers: { Authorization: 'Bearer ' + TOKEN } });
+    const r = await fetch(API + '/sessions', {
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      cache: 'no-store',
+    });
+    if (r.status === 401) {
+      localStorage.removeItem('prism_token');
+      TOKEN = '';
+      showLogin();
+      return false;
+    }
+    if (!r.ok) throw new Error('sessions ' + r.status);
     const data = await r.json();
-    sessions = data.sessions || [];
-    renderChips();
-    renderCards();
-    renderDetailTabs();
-    renderChatRows();
+    applySessionList(data.sessions || []);
+    setConnectionStatus('online');
     if (chSub === 'detail' && activeChat) renderChatMessages(activeChat);
+    return true;
   } catch (e) {
     console.error(e);
+    setConnectionStatus('offline');
+    return false;
   }
 }
 
@@ -6667,6 +6796,7 @@ function enterDetail(name) {
   stopLoginPoll();
   if (isCC) startLoginPoll(name);
   startRecoveryPoll(name);
+  persistNavigationState();
 }
 
 function exitDetail() {
@@ -6680,6 +6810,7 @@ function exitDetail() {
   hideLoginBanner(false);
   hideRecoveryBanner();
   activeSession = null;
+  persistNavigationState();
   // refresh card summaries
   loadSessions();
 }
@@ -8742,12 +8873,53 @@ async function closeImageEditor(commit) {
   editor = null;
 }
 
-async function bootstrap() {
-  const ok = await checkAuth();
-  if (!ok) return;
-  switchView('code');
+function restoreSavedNavigation() {
+  const saved = readNavigationState();
+  const available = saved && saved.session && sessions.some(s => s.name === saved.session);
+  if (saved && saved.view === 'settings') {
+    switchView('settings', { deferSessionRefresh: true, skipPersist: true });
+  } else if (saved && saved.view === 'chats') {
+    switchView('chats', { deferSessionRefresh: true, skipPersist: true });
+    if (saved.detail && available && typeof enterChatDetail === 'function') {
+      enterChatDetail(saved.session, { restoreScroll: true });
+    }
+  } else {
+    switchView('code', { deferSessionRefresh: true, skipPersist: true });
+    if (saved && saved.view === 'code' && saved.detail && available) enterDetail(saved.session);
+  }
+  persistNavigationState();
 }
 
+function registerPrismServiceWorker() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  const root = PREFIX || '';
+  navigator.serviceWorker.register(root + '/sw.js', {
+    scope: root + '/',
+    updateViaCache: 'none',
+  }).catch((e) => console.warn('service worker registration failed', e));
+}
+
+window.addEventListener('offline', () => setConnectionStatus('offline'));
+window.addEventListener('online', async () => {
+  if (!TOKEN) return;
+  setConnectionStatus('connecting');
+  await checkAuth();
+});
+
+async function bootstrap() {
+  if (_bootstrapRunning) return;
+  _bootstrapRunning = true;
+  try {
+    const ok = await checkAuth();
+    if (!ok) return;
+    restoreSavedNavigation();
+  } finally {
+    _bootstrapRunning = false;
+  }
+}
+
+if (document.readyState === 'complete') registerPrismServiceWorker();
+else window.addEventListener('load', registerPrismServiceWorker, { once: true });
 bootstrap();
 </script>
 </body>
