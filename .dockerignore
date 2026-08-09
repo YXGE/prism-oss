@@ -9,3 +9,4 @@ __pycache__/
 *.db-wal
 chat_data/
 data/
+sevis-memory/
