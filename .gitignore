@@ -23,6 +23,7 @@ uploads/
 data/
 .dev-data/
 .tools/
+sevis-memory/
 
 # Python
 __pycache__/
