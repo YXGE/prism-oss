@@ -7462,7 +7462,8 @@ function openNewSessionModal() {
   document.getElementById('newSessionModal').classList.add('open');
   document.getElementById('ns-err').textContent = '';
   applyTypeToggle();
-  loadDirs('~');
+  const sessionType = document.querySelector('input[name="ns-type"]:checked')?.value;
+  loadDirs(sessionType === 'codex' ? '/data/home/workspace' : '~');
 }
 
 async function loadDirs(path) {
@@ -7529,7 +7530,10 @@ function applyTypeToggle() {
 }
 
 document.addEventListener('change', (e) => {
-  if (e.target && e.target.name === 'ns-type') applyTypeToggle();
+  if (e.target && e.target.name === 'ns-type') {
+    applyTypeToggle();
+    loadDirs(e.target.value === 'codex' ? '/data/home/workspace' : '~');
+  }
 });
 function closeNewSessionModal() {
   document.getElementById('newSessionModal').classList.remove('open');

@@ -52,11 +52,13 @@ args = [
   "--corpus",
   "/data/sevis-memory/memory",
   "--threads",
-  "/data/sevis-memory/threads.jsonl"
+  "/data/sevis-memory/threads.jsonl",
+  "--timezone",
+  "Asia/Shanghai"
 ]
 cwd = "/app/vendor/latent-memory/src"
 enabled = true
-required = false
+required = true
 startup_timeout_sec = 15
 tool_timeout_sec = 60
 """

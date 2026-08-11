@@ -7,6 +7,10 @@ for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
   new Function(match[1]);
 }
 
+if (!html.includes("sessionType === 'codex' ? '/data/home/workspace' : '~'")) {
+  throw new Error('Codex sessions must default to the persistent workspace');
+}
+
 const manifest = JSON.parse(
   fs.readFileSync(path.join(root, 'static', 'manifest.webmanifest'), 'utf8')
 );
@@ -16,4 +20,4 @@ for (const icon of manifest.icons || []) {
   if (!fs.existsSync(iconPath)) throw new Error(`Missing PWA icon: ${icon.src}`);
 }
 
-console.log('PWA manifest, icons and inline scripts: ok');
+console.log('PWA manifest, icons, inline scripts and Codex workspace default: ok');

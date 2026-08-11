@@ -126,6 +126,11 @@ with td:
     check("exit 0 on re-run", rc2 == 0)
     c = _read_cfg()
     check("only one [mcp_servers.memory]", c.count("[mcp_servers.memory]") == 1)
+    check("memory MCP required", "required = true" in c)
+    check(
+        "memory timezone explicit",
+        '"--timezone"' in c and '"Asia/Shanghai"' in c,
+    )
 
 # ================================================================
 # 4. Marker integrity

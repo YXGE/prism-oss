@@ -88,7 +88,10 @@ MCP server into `/data/home/.codex/config.toml` under a Prism-managed block.
 It is idempotent — re-running it only updates the block, it never duplicates
 or overwrites unrelated config.
 
-Codex sessions should use `/data/home/workspace` as their working directory
+The managed MCP entry pins the timezone to `Asia/Shanghai` and marks the
+server as required, so a broken memory service cannot fail silently.
+
+Codex sessions use `/data/home/workspace` as their default working directory
 so the persona file and workspace are available.
 
 ### Verification
