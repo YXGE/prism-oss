@@ -16,6 +16,7 @@ Mount one Zeabur Volume at `/data`. The container uses:
 - `/data/home/.codex` — Codex login and session JSONL files
 - `/data/prism` — Prism tokens, SQLite search database, inbox, and metadata
 - `/data/home/workspace` — repositories and files operated on by Codex
+- `/data/sevis-memory` — private memory corpus (`.md`) and thread JSONL; never committed to Git
 
 Mounting a new Volume clears the target directory. Mount it before signing in
 to Codex or copying any project and memory data.
@@ -68,7 +69,67 @@ the dashboard password in Git.
   proxy with MFA) before exposing the dashboard to the public internet.
 - Back up `/data` regularly. Do not copy `auth.json` into source control.
 
-## 6. License
+## 6. Latent Memory MCP (cross-session memory)
+
+The public memory engine (`vendor/latent-memory/`) is baked into the Docker
+image from a frozen upstream snapshot; no dynamic clone of `main` runs at
+build time or container start.
+
+Private data lives **only** on the persistent volume:
+
+| Path | Purpose |
+|---|---|
+| `/data/sevis-memory/memory/` | Markdown corpus (memory files) |
+| `/data/sevis-memory/threads.jsonl` | Session thread records |
+| `/data/home/workspace/AGENTS.md` | Personal persona file loaded by Codex |
+
+`scripts/ensure_memory_mcp.py` runs on every container start and wires the
+MCP server into `/data/home/.codex/config.toml` under a Prism-managed block.
+It is idempotent — re-running it only updates the block, it never duplicates
+or overwrites unrelated config.
+
+Codex sessions should use `/data/home/workspace` as their working directory
+so the persona file and workspace are available.
+
+### Verification
+
+```bash
+# Inside the container or a Codex session:
+codex mcp list          # should show "memory" as enabled
+# Or inside a Codex chat:  /mcp
+```
+
+### Important
+
+- **Never commit memory data to Git.**  `sevis-memory/` is listed in both
+  `.gitignore` and `.dockerignore`.
+- The MCP server runs without `--embed` (zero-dependency retrieval, suitable
+  for 2C2G instances).
+- If a pre-existing non-Prism-managed `[mcp_servers.memory]` is detected in
+  `config.toml`, the init script exits with an error and asks for manual
+  resolution — it will not silently overwrite.
+
+## 7. Codex Reasoning (top-level config)
+
+`ensure_memory_mcp.py` also manages five top-level Codex reasoning keys
+placed at the very beginning of `config.toml` under their own independent
+Prism block:
+
+```
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+model_supports_reasoning_summaries = true
+hide_agent_reasoning = false
+show_raw_agent_reasoning = true
+```
+
+The reasoning block is isolated from the memory MCP block — each uses its
+own Prism markers, validation, and conflict detection.  If any of these keys
+appears outside the Prism-managed block (e.g. inserted manually before the
+first `[table]` header), the script exits with an error rather than
+silently overwriting.
+
+## 8. License
 
 The current repository commit is AGPL-3.0 even though older README text may say
 MIT. Private personal use is straightforward; if other users access a modified
