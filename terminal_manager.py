@@ -590,8 +590,14 @@ def _read_last_codex_usage(jsonl_path: Path) -> Optional[dict]:
 
 
 def _codex_session_id(jsonl: Path) -> Optional[str]:
+    resume_id = _codex_resume_id(jsonl)
+    return "codex-" + resume_id if resume_id else None
+
+
+def _codex_resume_id(jsonl: Path) -> Optional[str]:
+    """Return the raw UUID accepted by ``codex resume`` for a rollout."""
     match = CODEX_SESSION_RE.search(jsonl.name)
-    return "codex-" + match.group(1) if match else None
+    return match.group(1) if match else None
 
 
 def log_path(session: str) -> Path:
@@ -2673,6 +2679,20 @@ def _session_activity(name: str, info: dict) -> Tuple[str, Optional[float]]:
 
 def list_sessions() -> list[dict]:
     raw_sessions = _tmux_sessions_raw()
+    preserve_empty_state = False
+    if not raw_sessions:
+        # tmux lives inside the container and therefore disappears on every
+        # Zeabur redeploy/restart. Codex rollout JSONLs and Prism's live-state
+        # index live on /data, so recreate the tmux wrapper around those saved
+        # sessions before presenting the list to the frontend.
+        had_persisted_state = bool(_read_live_state())
+        if not had_persisted_state:
+            # Migration path for Prism versions that persisted the Codex
+            # process-to-rollout map but wrote an empty live_sessions.json.
+            had_persisted_state = bool(_seed_live_state_from_codex_map())
+        _restore_persisted_codex_sessions()
+        raw_sessions = _tmux_sessions_raw()
+        preserve_empty_state = had_persisted_state and not raw_sessions
     # Guard: only archive missing sessions if tmux returned a non-empty list.
     # An empty list could mean tmux is restarting or had a transient error —
     # archiving everything in that case would be destructive.
@@ -2718,7 +2738,9 @@ def list_sessions() -> list[dict]:
         }
         out.append(row)
         state_entries[s["name"]] = _snapshot_live_session(s, info, row)
-    _write_live_state(state_entries)
+    # A transient tmux/startup failure must not erase the only recovery index.
+    if state_entries or not preserve_empty_state:
+        _write_live_state(state_entries)
     return out
 
 
@@ -2937,7 +2959,18 @@ def create_session(name: str, cwd: str, session_type: str = "cc", cols: int = 80
     if session_type == "shell":
         wrapped = f"cd {cwd_real} && exec bash -l"
     elif session_type == "codex":
-        wrapped = f"cd {cwd_real} && while true; do codex; sleep 3; done"
+        codex_cmd = "codex"
+        if resume_sid:
+            # Unified message-store ids are prefixed with ``codex-`` while the
+            # CLI accepts the raw rollout UUID.
+            codex_resume_id = resume_sid.removeprefix("codex-")
+            if not re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                codex_resume_id,
+            ):
+                return {"ok": False, "error": "invalid Codex resume session id"}
+            codex_cmd = f"codex resume {codex_resume_id}"
+        wrapped = f"cd {cwd_real} && while true; do {codex_cmd}; sleep 3; done"
     elif session_type == "opencode":
         wrapped = f"cd {cwd_real} && while true; do opencode; sleep 3; done"
     else:
@@ -3326,21 +3359,165 @@ def _write_live_state(state: dict) -> None:
         pass
 
 
+def _drop_codex_session_map(name: str) -> None:
+    data = _read_codex_session_map()
+    if name in data:
+        data.pop(name, None)
+        _write_codex_session_map(data)
+
+
+_CODEX_RESTORE_LOCK = threading.Lock()
+
+
+def _codex_resume_data_from_snapshot(name: str, snapshot: dict) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a Codex resume UUID and rollout path, including old snapshots.
+
+    The first Prism release persisted the live Codex name and cwd but not its
+    rollout path. ``codex_session_map.json`` was already persisted, so use it
+    as a migration fallback for the first restart after this fix is deployed.
+    """
+    resume_id = snapshot.get("resume_id")
+    session_id = snapshot.get("session_id") or ""
+    if not resume_id and session_id.startswith("codex-"):
+        resume_id = session_id.removeprefix("codex-")
+
+    jsonl_path = snapshot.get("jsonl_path")
+    if not jsonl_path:
+        mapped = _read_codex_session_map().get(name)
+        if isinstance(mapped, dict):
+            jsonl_path = mapped.get("jsonl_path")
+
+    if jsonl_path:
+        path = Path(jsonl_path)
+        if path.exists():
+            resume_id = resume_id or _codex_resume_id(path)
+        else:
+            jsonl_path = None
+
+    if not resume_id or not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        resume_id,
+    ):
+        return None, jsonl_path
+    return resume_id, jsonl_path
+
+
+def _seed_live_state_from_codex_map() -> dict:
+    """Build missing live state from the older persistent Codex map.
+
+    Entries already archived by Prism are skipped. Newer Prism versions remove
+    map entries when the user explicitly deletes or archives a session, so this
+    fallback does not resurrect intentionally closed chats on later restarts.
+    """
+    existing = _read_live_state()
+    if existing:
+        return existing
+    seeded = {}
+    for name, mapped in _read_codex_session_map().items():
+        if not NAME_RE.match(name) or not isinstance(mapped, dict):
+            continue
+        jsonl_path = mapped.get("jsonl_path")
+        if not jsonl_path:
+            continue
+        path = Path(jsonl_path)
+        if not path.exists() or _archive_duplicate_exists({"jsonl_path": str(path)}):
+            continue
+        resume_id = _codex_resume_id(path)
+        meta = _codex_session_meta(path)
+        payload = (meta or {}).get("payload") or {}
+        cwd = payload.get("cwd")
+        if not resume_id or not cwd or not os.path.isdir(cwd):
+            continue
+        seeded[name] = {
+            "name": name,
+            "display_name": get_display_name(name),
+            "chat_name": get_chat_name(name),
+            "kind": "codex",
+            "cwd": cwd,
+            "created": None,
+            "jsonl_path": str(path),
+            "session_id": "codex-" + resume_id,
+            "resume_id": resume_id,
+            "log_path": str(log_path(name)),
+            "last_seen_at": mapped.get("updated_at") or int(time.time()),
+            "migrated_from_codex_map": True,
+        }
+    if seeded:
+        _write_live_state(seeded)
+    return seeded
+
+
+def _restore_persisted_codex_sessions() -> list[str]:
+    """Recreate interrupted Codex tmux sessions from persistent live state."""
+    if not _CODEX_RESTORE_LOCK.acquire(blocking=False):
+        return []
+    restored: list[str] = []
+    try:
+        state = _read_live_state()
+        if not state:
+            return restored
+        live_names = {item["name"] for item in _tmux_sessions_raw()}
+        state_changed = False
+        for name, snapshot in state.items():
+            if name in live_names or not NAME_RE.match(name):
+                continue
+            if not isinstance(snapshot, dict) or snapshot.get("kind") != "codex":
+                continue
+            cwd = snapshot.get("cwd")
+            if not cwd or not os.path.isdir(cwd):
+                continue
+            resume_id, jsonl_path = _codex_resume_data_from_snapshot(name, snapshot)
+            if not resume_id:
+                continue
+            result = create_session(
+                name,
+                cwd,
+                session_type="codex",
+                resume_sid=resume_id,
+            )
+            if not result.get("ok"):
+                continue
+            snapshot["resume_id"] = resume_id
+            snapshot["session_id"] = "codex-" + resume_id
+            if jsonl_path:
+                snapshot["jsonl_path"] = jsonl_path
+            restored.append(name)
+            live_names.add(name)
+            state_changed = True
+        if state_changed:
+            _write_live_state(state)
+            # Give the launcher enough time to exec Codex before list_sessions
+            # inspects the process tree and snapshots it again.
+            time.sleep(0.2)
+        return restored
+    finally:
+        _CODEX_RESTORE_LOCK.release()
+
+
 def _drop_live_state(name: str) -> None:
     state = _read_live_state()
     if name in state:
         state.pop(name, None)
         _write_live_state(state)
+    _drop_codex_session_map(name)
 
 
 def _snapshot_live_session(tmux_row: dict, info: dict, row: dict) -> dict:
     jsonl_path = None
     session_id = None
+    resume_id = None
     if info.get("kind") == "cc":
         jp = _claude_jsonl_for_pid(info.get("claude_pid"))
         if jp is not None:
             jsonl_path = str(jp)
             session_id = jp.stem
+            resume_id = session_id
+    elif info.get("kind") == "codex":
+        jp = _find_codex_jsonl(info.get("codex_pid"), session_name=row.get("name"))
+        if jp is not None:
+            jsonl_path = str(jp)
+            session_id = _codex_session_id(jp)
+            resume_id = _codex_resume_id(jp)
     return {
         "name": row.get("name"),
         "display_name": row.get("display_name"),
@@ -3350,6 +3527,7 @@ def _snapshot_live_session(tmux_row: dict, info: dict, row: dict) -> dict:
         "created": tmux_row.get("created"),
         "jsonl_path": jsonl_path,
         "session_id": session_id,
+        "resume_id": resume_id,
         "log_path": str(log_path(row.get("name", ""))),
         "last_seen_at": int(time.time()),
     }

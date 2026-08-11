@@ -23,16 +23,19 @@ if (-not $nodePath) {
     throw 'Node.js was not found; PWA checks cannot run.'
 }
 
-Write-Host '1/4 Python dependency integrity'
+Write-Host '1/5 Python dependency integrity'
 & $python -m pip check
 
-Write-Host '2/4 Python syntax'
-& $python -m compileall -q server.py terminal_manager.py message_store.py scripts/check_runtime.py
+Write-Host '2/5 Python syntax'
+& $python -m compileall -q server.py terminal_manager.py message_store.py scripts/check_runtime.py scripts/test_codex_session_recovery.py
 
-Write-Host '3/4 Backend and static asset smoke tests'
+Write-Host '3/5 Codex session recovery tests'
+& $python scripts/test_codex_session_recovery.py
+
+Write-Host '4/5 Backend and static asset smoke tests'
 & $python scripts/check_runtime.py
 
-Write-Host '4/4 PWA configuration'
+Write-Host '5/5 PWA configuration'
 & $nodePath scripts/check_pwa.js
 
 Write-Host 'All checks passed.' -ForegroundColor Green
