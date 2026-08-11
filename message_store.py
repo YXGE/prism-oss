@@ -510,6 +510,38 @@ def _codex_patch_path(arguments):
     return match.group(1).strip() if match else ""
 
 
+def _codex_reasoning_text(payload):
+    """Extract displayable reasoning, preferring raw text over summaries."""
+    for field in ("content", "summary"):
+        value = payload.get(field)
+
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+            continue
+
+        if not isinstance(value, list):
+            continue
+
+        texts = []
+        for block in value:
+            if isinstance(block, str):
+                text = block.strip()
+            elif isinstance(block, dict):
+                text = str(block.get("text") or "").strip()
+            else:
+                text = ""
+
+            if text:
+                texts.append(text)
+
+        if texts:
+            return "\n".join(texts)
+
+    return ""
+
+
 _TG_INBOX_DIR = os.path.expanduser("~/.claude/channels/telegram/inbox")
 _CODEX_IMAGE_PATH_RE = re.compile(
     r"@?("
@@ -658,6 +690,25 @@ def read_codex_chat_messages(jsonl_path, limit=200, focus_uuid=None):
                     "source_uuid": payload.get("id") or f"codex-message-{index}",
                     "blocks": blocks,
                 })
+        elif payload_type == "reasoning":
+            text = _codex_reasoning_text(payload)
+            if not text:
+                continue
+
+            # Prevent tool calls on opposite sides of this reasoning item from
+            # being incorrectly merged into one tool group.
+            tool_message = None
+
+            out.append({
+                "role": "assistant",
+                "ts": ts,
+                "source_uuid": payload.get("id") or f"codex-reasoning-{index}",
+                "blocks": [{
+                    "type": "thinking",
+                    "text": text,
+                    "done": True,
+                }],
+            })
         elif payload_type in ("function_call", "custom_tool_call"):
             call_id = payload.get("call_id") or payload.get("id") or f"tool-{index}"
             is_current = active_start is not None and index > active_start
