@@ -8,6 +8,8 @@ Idempotent: safe to run on every container start.
 - Manages two independent Prism blocks in /data/home/.codex/config.toml:
   (a) Top-level reasoning keys (model_reasoning_effort, …) at file start
   (b) [mcp_servers.memory] section for Latent Memory MCP
+- Gives every configured MCP server a server-level approval default of
+  ``approve`` unless that server already declares an explicit default.
 - If a non-Prism-managed version of either block exists, exits with an
   error and asks for manual resolution.
 """
@@ -61,7 +63,12 @@ enabled = true
 required = true
 startup_timeout_sec = 15
 tool_timeout_sec = 60
+default_tools_approval_mode = "approve"
 """
+
+MCP_APPROVAL_KEY = "default_tools_approval_mode"
+MCP_APPROVAL_VALUE = "approve"
+_TOML_HEADER_PROBE = "__prism_mcp_header_probe__"
 
 SEVIS_DIR = Path("/data/sevis-memory")
 MEMORY_DIR = SEVIS_DIR / "memory"
@@ -134,6 +141,89 @@ def _parse_toml_safe(text: str):
         return tomllib.loads(text)
     except Exception:
         return None
+
+
+def _find_probe_path(value, path: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+    """Return the nested TOML table path containing our header probe."""
+    if not isinstance(value, dict):
+        return None
+    if value.get(_TOML_HEADER_PROBE) is True:
+        return path
+    for key, child in value.items():
+        found = _find_probe_path(child, path + (str(key),))
+        if found is not None:
+            return found
+    return None
+
+
+def _mcp_server_header_path(line: str) -> tuple[str, ...] | None:
+    """Parse a direct MCP-server TOML table header from *line*.
+
+    ``tomllib`` performs the dotted/quoted-key parsing so server names such as
+    ``[mcp_servers."remote.docs"]`` work without a hand-written TOML parser.
+    Nested tool tables are intentionally excluded because their penultimate
+    path component is ``tools``, not ``mcp_servers``.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("[") or stripped.startswith("[["):
+        return None
+    try:
+        probe_doc = tomllib.loads(
+            f"{line.rstrip()}\n{_TOML_HEADER_PROBE} = true\n"
+        )
+    except Exception:
+        return None
+    path = _find_probe_path(probe_doc)
+    if path is None or len(path) < 2 or path[-2] != "mcp_servers":
+        return None
+    return path
+
+
+def _table_at_path(parsed: dict, path: tuple[str, ...]):
+    value = parsed
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    return value
+
+
+def _approve_unconfigured_mcp_servers(config: str) -> tuple[str, int]:
+    """Add an approval default to every MCP server that lacks one.
+
+    Existing server-level choices (``auto``, ``prompt``, ``writes``, or
+    ``approve``) and per-tool overrides are preserved. The pass supports
+    top-level, profile-scoped, and plugin-scoped MCP tables because it keys off
+    the TOML path component immediately preceding the server name.
+    """
+    parsed = _parse_toml_safe(config)
+    if parsed is None:
+        raise ValueError("cannot add MCP approval defaults to invalid TOML")
+
+    output: list[str] = []
+    added = 0
+    for line in config.splitlines(keepends=True):
+        path = _mcp_server_header_path(line)
+        table = _table_at_path(parsed, path) if path is not None else None
+        needs_default = (
+            isinstance(table, dict) and MCP_APPROVAL_KEY not in table
+        )
+
+        if needs_default and not line.endswith(("\n", "\r")):
+            line += "\n"
+        output.append(line)
+
+        if needs_default:
+            indent = line[:len(line) - len(line.lstrip())]
+            output.append(
+                f'{indent}{MCP_APPROVAL_KEY} = "{MCP_APPROVAL_VALUE}"\n'
+            )
+            added += 1
+
+    updated = "".join(output)
+    if _parse_toml_safe(updated) is None:
+        raise ValueError("adding MCP approval defaults produced invalid TOML")
+    return updated, added
 
 
 # ---------- marker validation ----------
@@ -353,6 +443,24 @@ def main() -> int:
         config = base.rstrip("\n") + "\n\n" + block
     else:
         config = block + "\n"
+
+    # 5. Give every MCP server a no-prompt default. Explicit server-level
+    # choices and per-tool overrides remain authoritative.
+    try:
+        config, approval_defaults_added = _approve_unconfigured_mcp_servers(
+            config
+        )
+    except ValueError as exc:
+        print(
+            f"[ensure_memory_mcp] ERROR: {exc}.",
+            file=sys.stderr,
+        )
+        return 1
+    if approval_defaults_added:
+        print(
+            "[ensure_memory_mcp] Added approval defaults to "
+            f"{approval_defaults_added} MCP server(s)."
+        )
 
     write_config_atomic(config)
     print(f"[ensure_memory_mcp] Wrote {CODEX_CONFIG}")

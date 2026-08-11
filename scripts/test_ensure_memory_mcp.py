@@ -131,6 +131,10 @@ with td:
         "memory timezone explicit",
         '"--timezone"' in c and '"Asia/Shanghai"' in c,
     )
+    check(
+        "memory tools approved by default",
+        'default_tools_approval_mode = "approve"' in c,
+    )
 
 # ================================================================
 # 4. Marker integrity
@@ -325,6 +329,12 @@ with td:
     c = _read_cfg()
     check("8 [some_setting] preserved", "[some_setting]" in c)
     check("8 [mcp_servers.other] preserved", "[mcp_servers.other]" in c)
+    parsed = m._parse_toml_safe(c)
+    check(
+        "8 existing MCP gets approval default",
+        parsed["mcp_servers"]["other"]["default_tools_approval_mode"]
+        == "approve",
+    )
     check("8 Prism block appended", m.PRISM_MARKER_START in c)
 
 # ================================================================
@@ -676,6 +686,74 @@ check("26 says 'Codex configuration bootstrap failed'",
       "Codex configuration bootstrap failed" in ep2)
 check("26 old 'Latent Memory MCP' text gone",
       "Latent Memory MCP bootstrap failed" not in ep2)
+
+# ================================================================
+print("=" * 60)
+print("27. MCP approval defaults — quoted and plugin-scoped servers")
+td, home, data = _fresh_env()
+with td:
+    _set_paths(home, data)
+    _write_cfg(
+        '[mcp_servers."remote.docs"]\n'
+        'url = "https://example.test/mcp"\n\n'
+        '[plugins."sample@test".mcp_servers.browser]\n'
+        'enabled = true\n'
+    )
+    rc = m.main()
+    check("27 exit 0", rc == 0)
+    c = _read_cfg()
+    parsed = m._parse_toml_safe(c)
+    check(
+        "27 quoted top-level server approved",
+        parsed["mcp_servers"]["remote.docs"]["default_tools_approval_mode"]
+        == "approve",
+    )
+    check(
+        "27 plugin server approved",
+        parsed["plugins"]["sample@test"]["mcp_servers"]["browser"]
+        ["default_tools_approval_mode"] == "approve",
+    )
+
+# ================================================================
+print("=" * 60)
+print("28. MCP approval defaults — explicit choices and tools preserved")
+td, home, data = _fresh_env()
+with td:
+    _set_paths(home, data)
+    _write_cfg(
+        '[mcp_servers.sensitive]\n'
+        'command = "sensitive-tool"\n'
+        'default_tools_approval_mode = "prompt"\n\n'
+        '[mcp_servers.sensitive.tools.read]\n'
+        'approval_mode = "approve"\n\n'
+        '[mcp_servers.ordinary]\n'
+        'command = "ordinary-tool"\n\n'
+        '[mcp_servers.ordinary.tools.delete]\n'
+        'approval_mode = "prompt"\n'
+    )
+    rc = m.main()
+    check("28 exit 0", rc == 0)
+    first = _read_cfg()
+    rc2 = m.main()
+    second = _read_cfg()
+    parsed = m._parse_toml_safe(second)
+    check("28 idempotent re-run exits 0", rc2 == 0)
+    check("28 output stable across re-run", first == second)
+    check(
+        "28 explicit prompt preserved",
+        parsed["mcp_servers"]["sensitive"]["default_tools_approval_mode"]
+        == "prompt",
+    )
+    check(
+        "28 missing server default added",
+        parsed["mcp_servers"]["ordinary"]["default_tools_approval_mode"]
+        == "approve",
+    )
+    check(
+        "28 per-tool prompt preserved",
+        parsed["mcp_servers"]["ordinary"]["tools"]["delete"]["approval_mode"]
+        == "prompt",
+    )
 
 # ================================================================
 print()
