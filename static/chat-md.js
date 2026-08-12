@@ -1,6 +1,7 @@
 // chat-md.js — Markdown renderer for chat messages
 // Split out of app.html on 2026-05-22.
-// Exposes globals: chMdEscape, chMdRenderUser, chMdInl, chMdCodeBlock, chMdTable, chMdRender
+// Exposes globals: chMdEscape, chMdRenderUser, chMdInl, chMdCodeBlock, chMdTable,
+// chMdRender, chMdSplitThinkBlocks
 // Used by: app.html (chat tab), chat-archive.html, memory.html (future)
 
 // === Markdown renderer for assistant messages (adapted from files.html) ===
@@ -41,6 +42,53 @@ function chMdRenderUser(src) {
   t = t.replace(/~~(.+?)~~/g, '<del>$1</del>');
   // preserve newlines
   return t.replace(/\n/g, '<br>');
+}
+
+// Split assistant-authored literary <think> sections from ordinary Markdown.
+// Tags must be alone on a line. This deliberately leaves inline examples and
+// fenced code untouched, while still recognizing an unfinished opening tag
+// during the chat reveal animation.
+function chMdSplitThinkBlocks(src) {
+  if (!src) return [];
+  const parts = [];
+  const buffer = [];
+  let type = 'text';
+  let inFence = false;
+
+  const flush = (complete = true) => {
+    const text = buffer.join('');
+    buffer.length = 0;
+    if (text || type === 'thinking') parts.push({ type, text, complete });
+  };
+
+  let offset = 0;
+  while (offset < src.length) {
+    const newline = src.indexOf('\n', offset);
+    const end = newline === -1 ? src.length : newline + 1;
+    const line = src.slice(offset, end);
+    const withoutNewline = line.endsWith('\n') ? line.slice(0, -1) : line;
+    const trimmed = withoutNewline.trim();
+
+    if (!inFence && type === 'text' && /^<think>$/i.test(trimmed)) {
+      flush();
+      type = 'thinking';
+      offset = end;
+      continue;
+    }
+    if (!inFence && type === 'thinking' && /^<\/think>$/i.test(trimmed)) {
+      flush();
+      type = 'text';
+      offset = end;
+      continue;
+    }
+
+    buffer.push(line);
+    if (/^```/.test(withoutNewline.trimStart())) inFence = !inFence;
+    offset = end;
+  }
+
+  flush(type !== 'thinking');
+  return parts;
 }
 function chMdInl(t) {
   // -- inline code: pull out first so its contents aren't touched by other rules --

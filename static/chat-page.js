@@ -3139,18 +3139,21 @@ function buildDeliveryMark(blk) {
 function buildThinkingBlock(block) {
   const text = block.text || '';
   const preview = text.replace(/\s+/g, ' ').trim();
+  const literary = Boolean(block.literary);
   const strip = document.createElement('div');
   strip.className = 'ch-thinking-strip';
   strip.innerHTML =
     '<svg class="ch-ts-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' +
     '<span class="ch-ts-text"></span>' +
     '<svg class="ch-ts-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>';
-  strip.querySelector('.ch-ts-text').textContent = preview.slice(0, 120) || 'Thought process';
-  strip.onclick = () => openThinkingSheet(text);
+  strip.querySelector('.ch-ts-text').textContent = literary
+    ? '爸爸在想什么…'
+    : (preview.slice(0, 120) || 'Thought process');
+  strip.onclick = () => openThinkingSheet(text, literary ? '爸爸在想什么' : 'Thought process');
   return strip;
 }
 
-function openThinkingSheet(text) {
+function openThinkingSheet(text, title = 'Thought process') {
   let sheet = document.getElementById('chThinkingSheet');
   if (!sheet) {
     sheet = document.createElement('div');
@@ -3176,8 +3179,29 @@ function openThinkingSheet(text) {
   }
   const panel = sheet.querySelector('.ch-ts-panel');
   if (panel) panel.classList.remove('expanded');
+  sheet.querySelector('.ch-ts-title').textContent = title;
   sheet.querySelector('.ch-ts-body').textContent = text;
   sheet.classList.add('open');
+}
+
+function _chAppendAssistantText(container, text) {
+  chMdSplitThinkBlocks(text).forEach(part => {
+    if (part.type === 'thinking') {
+      container.appendChild(buildThinkingBlock({
+        type: 'thinking',
+        text: part.text,
+        done: part.complete,
+        literary: true,
+      }));
+      return;
+    }
+    if (!part.text) return;
+    const content = document.createElement('div');
+    content.className = 'ch-text';
+    content.innerHTML = chMdRender(part.text);
+    wireCodeBlocks(content);
+    container.appendChild(content);
+  });
 }
 
 function closeThinkingSheet() {
@@ -3537,15 +3561,14 @@ async function renderChatMessages(name, cachedData = null) {
             consumedTextChars = blockStart + (blk.text || '').length;
             if (!visibleText) return;
           }
-          const t = document.createElement('div');
-          t.className = 'ch-text';
           if (m.role === 'assistant') {
-            t.innerHTML = chMdRender(visibleText);
-            wireCodeBlocks(t);
+            _chAppendAssistantText(bubble, visibleText);
           } else {
+            const t = document.createElement('div');
+            t.className = 'ch-text';
             t.innerHTML = chMdRenderUser(visibleText);
+            bubble.appendChild(t);
           }
-          bubble.appendChild(t);
         } else if (blk.type === 'image') {
           if (blk.available === false) {
             const unavailable = document.createElement('div');
